@@ -1,33 +1,52 @@
 #ifndef ARRAY_H
 #define ARRAY_H
 
+#include <stdbool.h>
 #include <stddef.h>
+#include <stdatomic.h>
 
-// Used to keep track of an array.
+#include "../platform_specific/api.h"
+
 typedef struct{
-    int count; // how many spaces are there in the array.
-    size_t size; // what size are the elements?
-    void *elements; // pointer to the elements.
+    int id;
+    void (*task)(void *);
+    void *args;
+} Task_t;
 
-    int active_count; // how many elements are currently in the array.
+// Describes task storage owned and allocated by the caller.
+typedef struct{
+    size_t capacity;
+    Task_t *elements;
 } Array_t;
 
 // used for arrays that cannot be altered by others. It is locked.
 typedef struct{
-    lock;
-    Array_t array;
+    atomic_flag lock;
+    Array_t array_info;
 } Sensitive_array_t;
 
 // elements are added to the head and removed from the tail. This is a circular array that is sensitive to the order of elements. It is locked.
 typedef struct{
-    lock;
-    Array_t array;
-    head;
-    tail; // current position
-} queue_sensitive_t;
+    Platform_mutex_t lock; // mutex for locking
+    Platform_condition_t work_available; // condition variable for signaling when work is available
 
-void init_array();
-void enqueue(queue_sensitive_t *queue, void *element);
-void pop(queue_sensitive_t *queue, void *element);
+    Array_t array_info; // holds all info about the array.
+    size_t head;
+    size_t tail; // current position
+    size_t task_count; // number of occupied queue slots
+} Queue_sensitive_t;
+
+typedef struct{
+    Array_t array_info; // holds all info about the array.
+    size_t head;
+    size_t tail; // current position
+} Queue_t;
+
+/*
+ * The caller must hold queue->lock while calling these functions.
+ * enqueue returns false when the queue is full; pop returns false when empty.
+ */
+bool enqueue(Queue_sensitive_t *queue, Task_t task);
+bool pop(Queue_sensitive_t *queue, Task_t *task);
 
 #endif
