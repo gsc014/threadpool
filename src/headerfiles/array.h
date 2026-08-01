@@ -4,6 +4,7 @@
 #include <stdbool.h>
 #include <stddef.h>
 #include <stdatomic.h>
+#include <math.h>
 
 #include "../platform_specific/api.h"
 
@@ -28,11 +29,11 @@ typedef struct{
 // elements are added to the head and removed from the tail. This is a circular array that is sensitive to the order of elements. It is locked.
 typedef struct{
     Platform_mutex_t lock; // mutex for locking
-    Platform_condition_t work_available; // condition variable for signaling when work is available
 
     Array_t array_info; // holds all info about the array.
     size_t head;
     size_t tail; // current position
+
     size_t task_count; // number of occupied queue slots
 } Queue_sensitive_t;
 
@@ -48,5 +49,6 @@ typedef struct{
  */
 bool enqueue(Queue_sensitive_t *queue, Task_t task);
 bool pop(Queue_sensitive_t *queue, Task_t *task);
+bool move_queue(Queue_sensitive_t *source, Queue_sensitive_t *destination, size_t count);
 
 #endif

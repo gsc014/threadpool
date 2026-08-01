@@ -121,6 +121,18 @@ int platform_mutex_unlock(Platform_mutex_t *mutex){
     return 0;
 }
 
+int platform_mutex_trylock(Platform_mutex_t *mutex){
+    if(mutex == NULL || !mutex->initialized){
+        return EINVAL;
+    }
+
+    if(TryAcquireSRWLockExclusive(&mutex->native)){
+        return 0;
+    }else{
+        return EBUSY;
+    }
+}
+
 int platform_condition_init(Platform_condition_t *condition){
     if(condition == NULL || condition->initialized){
         return EINVAL;

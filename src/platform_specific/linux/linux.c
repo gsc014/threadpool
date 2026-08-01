@@ -109,6 +109,13 @@ int platform_mutex_unlock(Platform_mutex_t *mutex){
     return pthread_mutex_unlock(&mutex->native);
 }
 
+int platform_mutex_trylock(Platform_mutex_t *mutex){
+    if(mutex == NULL || !mutex->initialized){
+        return EINVAL;
+    }
+    return pthread_mutex_trylock(&mutex->native);
+}
+
 int platform_condition_init(Platform_condition_t *condition){
     if(condition == NULL || condition->initialized){
         return EINVAL;

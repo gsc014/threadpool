@@ -83,6 +83,7 @@ int platform_mutex_init(Platform_mutex_t *mutex);
 int platform_mutex_destroy(Platform_mutex_t *mutex);
 int platform_mutex_lock(Platform_mutex_t *mutex);
 int platform_mutex_unlock(Platform_mutex_t *mutex);
+int platform_mutex_trylock(Platform_mutex_t *mutex);
 
 int platform_condition_init(Platform_condition_t *condition);
 int platform_condition_destroy(Platform_condition_t *condition);

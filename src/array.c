@@ -29,3 +29,29 @@ bool pop(Queue_sensitive_t *queue, Task_t *task){
 
     return true;
 }
+
+// moves count tasks from source to destination.
+bool move_queue(Queue_sensitive_t *source, Queue_sensitive_t *destination, size_t count){
+    // given count is too high, so we will move as many tasks as possible.
+    if (count > source->task_count) {
+        count = source->task_count;
+    }
+    
+    size_t free_slots = destination->array_info.capacity - destination->task_count;
+    if (count > free_slots) {
+        count = free_slots;
+    }
+
+    for(size_t i = 0; i < count; i++){
+        Task_t task;
+        bool found = pop(source, &task);
+        if(!found){
+            return false;
+        }
+        bool added = enqueue(destination, task);
+        if(!added){
+            return false;
+        }
+    }
+    return true;
+}

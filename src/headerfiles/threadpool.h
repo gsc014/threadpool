@@ -9,8 +9,13 @@
 #include "platform_specific/api.h"
 
 
-#define THREADCOUNT 4
-#define TASKQUEUE_SIZE 256
+#define THREADCOUNT 14
+#define TASKQUEUE_SIZE 1024
+
+#define LOCAL_TASKQUEUE_SIZE 16
+// we dont want to fill tasks all the time, at what capacity should we start moving tasks from the global queue to the local queue?
+#define LOCAL_QUEUE_LOW_THRESHOLD 4
+
 #define WAITINGQUEUE_SIZE 64
 
 typedef struct Threadpool Threadpool_t;
@@ -19,6 +24,8 @@ typedef struct{
     int id;
     Threadpool_t *threadpool;
     Platform_thread_t thread;
+
+    Queue_sensitive_t local_taskqueue_info;
 } Worker_t;
 
 struct Threadpool{
@@ -26,6 +33,7 @@ struct Threadpool{
     // Queue_t main_thread_taskqueue; // queue of tasks that are ready to be executed by the main thread. some functions only want to be executed by the main thread, so they will be placed in this queue.
     // Platform_mutex_t work_mutex; // mutex for locking
     // Platform_condition_t work_available; // condition variable
+    Platform_condition_t work_available; // condition variable for signaling when work is available
 
     Queue_sensitive_t global_taskqueue; // queue of tasks that are ready to be executed.
     Sensitive_array_t waiting_array; // queue of tasks that are waiting on a condition to be met.
