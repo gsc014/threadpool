@@ -264,3 +264,29 @@ Threadpool_t *init_threadpool(size_t thread_count){
 
     return threadpool;
 }
+
+/* next steps:
+try to reduce locking and use more atomics. 
+try to make the main thread do something if its waiting on something
+benchmark where time is spent. how much time is wasted on locks etc.?
+make a debug mode where you can see statistics, but only in debug mode.
+optimize types in structs to reduce memory.
+make sure that using conditions can be used by main thread functions.
+it is bad that add_task only adds one at a time, maybe do so that as long as there
+is enough work to do, we will store up tasks before we send them to the global queue
+
+either multiple global queues, or one queue with multiple locks, so parts of the queue can be accessed at the same time.
+work stealing can be optimized, we just use trylock and that can be pure luck.
+when stealing, take tasks from opposite end of the queue, maybe that can reduce locking? maybe this can use 2 locks?
+resizing of queues, we just resize with a fixed size, what if the size is too small? then we need to resize again.
+
+Workers have a fixed local queue size, dont allcate them, just store as fixed array.
+should a task have a priority?
+should a task have a size? so stealing etc will be more fair? a small tash is currently equal to a large task.
+can this be done at startup? we can calculate the approximate time/value for every task?
+
+can two small tasks be ran back to back instead of going into the scheduler?
+limit scheduler calls? we dont need to go into the scheduler every single time, we know that we already have a/multiple tasks.
+
+
+*/
