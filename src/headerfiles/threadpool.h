@@ -5,11 +5,12 @@
 #include <stdint.h>
 #include <stdatomic.h>
 
-#include "array.h"
+#include "queue.h"
+#include "task.h"
 #include "platform_specific/api.h"
 
-
-#define THREADCOUNT 14
+// threadcount is now calculated at runtime based on the number of hardware threads available.
+// #define THREADCOUNT 14
 #define TASKQUEUE_SIZE 1024
 
 #define LOCAL_TASKQUEUE_SIZE 16
@@ -24,27 +25,23 @@ typedef struct{
     int id;
     Threadpool_t *threadpool;
     Platform_thread_t thread;
-
-    Queue_sensitive_t local_taskqueue_info;
+    Queue_t local_taskqueue_info;
 } Worker_t;
 
 struct Threadpool{
     atomic_bool shutdown; // atomic bool that indicates if the threadpool is shutting down. If it is, then all threads will finish their current task and then exit.
-    // Queue_t main_thread_taskqueue; // queue of tasks that are ready to be executed by the main thread. some functions only want to be executed by the main thread, so they will be placed in this queue.
-    // Platform_mutex_t work_mutex; // mutex for locking
-    // Platform_condition_t work_available; // condition variable
     Platform_condition_t work_available; // condition variable for signaling when work is available
-
-    Queue_sensitive_t global_taskqueue; // queue of tasks that are ready to be executed.
-    Sensitive_array_t waiting_array; // queue of tasks that are waiting on a condition to be met.
+    Queue_t global_taskqueue; // queue of tasks that are ready to be executed.
     Worker_t *workers;
     size_t worker_count;
+    size_t worker_capacity;
 };
 
 int free_threadpool(Threadpool_t *threadpool);
 void scheduler(Worker_t *worker);
 bool add_task(Threadpool_t *threadpool, void (*task)(void *), void *args);
+bool add_task_bulk(Threadpool_t *threadpool, Queue_t *tasks);
 void shutdown_threadpool(Threadpool_t *threadpool);
-Threadpool_t *init_threadpool(void);
+Threadpool_t *init_threadpool(size_t thread_count);
 
 #endif

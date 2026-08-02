@@ -1,20 +1,19 @@
 #ifndef CONDITION_H
 #define CONDITION_H
 
+#include <stddef.h>
 #include <stdatomic.h>
 
-// what is the condition? how can it be met?
-typedef enum{
-    IS_ZERO,
-} Condition_states_t;
+#include "task.h"
 
-// When a using multiple threads, maybe multiple threads will be waiting on a condition to be met. This is a condition, it should be used when waiting on something. When the condition is met, the thread that made the condition will continue to run it or will place it in a ready queue.
+// condition, will execute task when counter reaches 0
 typedef struct{
-    atomic_flag lock;
-    Condition_states_t state;
-    atomic_int current_value;
+  atomic_size_t remaining;
+  Task_t task;
 } Condition_t;
 
-void condition_check(Condition_t *condition);
+int update_condition(Condition_t *condition);
+void init_condition(Condition_t *condition, size_t initial_value, Task_t task);
+void reset_condition(Condition_t *condition, size_t new_value);
 
 #endif
