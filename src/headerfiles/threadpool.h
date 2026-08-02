@@ -7,6 +7,7 @@
 
 #include "queue.h"
 #include "task.h"
+#include "condition.h"
 #include "platform_specific/api.h"
 
 // threadcount is now calculated at runtime based on the number of hardware threads available.

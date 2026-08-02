@@ -113,7 +113,7 @@ bool dequeue(Queue_t *queue, void *element){
            (char *)queue->elements + (queue->tail * queue->element_size),
            queue->element_size);
     
-           queue->tail = (queue->tail + 1) % queue->capacity;
+    queue->tail = (queue->tail + 1) % queue->capacity;
     queue->active_count--;
     return true;
 }

@@ -7,41 +7,41 @@ use a condition to make sure that what needs to be done gets done when the condi
 // will decrement counter, once counter reaches 0, will execute task.
 // will return 1 if task was executed, 0 if the condition has not been met
 // yet and -1 if the condition has already been met and executed.
+
 int update_condition(Condition_t *condition){
-    if(condition == NULL || condition->task.task == NULL) {
+    if(condition == NULL || condition->task.task == NULL){
         return -1;
     }
 
-    size_t old_value = atomic_load(&condition->remaining);
-
-    for(;;){
-        if(old_value == 0){
-            return -1;
-        }
-
-        if(atomic_compare_exchange_weak(
-            &condition->remaining,
-            &old_value,
-            old_value - 1
-        )){
-            break;
-        }
-    }
-
-    if (old_value == 1) {
-        condition->task.task(condition->task.args);
+    // bool should_execute_task = false;
+    platform_mutex_lock(&condition->lock);
+    if(condition->remaining == 1){ // if this is the last one, we will execute the task.
+        // should_execute_task = true;
+        Task_t task = condition->task;
+        condition->remaining = 0;
+        platform_mutex_unlock(&condition->lock);
+        task.task(task.args);
         return 1;
     }
-
-    return 0;
-}
-void init_condition(Condition_t *condition, size_t initial_value, Task_t task){
-    if(condition == NULL || task.task == NULL){
-        return;
+    else if(condition->remaining == 0){ // if the condition has already been met, we will not execute the task again.
+        platform_mutex_unlock(&condition->lock);
+        return -1;
     }
 
-    atomic_init(&condition->remaining, initial_value);
-    condition->task = task;
+    condition->remaining--;
+    platform_mutex_unlock(&condition->lock);
+    return 0;
+}
+
+void init_condition(Condition_t *condition, size_t initial_value, Task_t *task){
+    if(condition == NULL || task == NULL || task->task == NULL || initial_value == 0){
+        return;
+    }
+    if(platform_mutex_init(&condition->lock) != 0){
+        return;
+    }
+    condition->remaining = initial_value;
+    condition->task = *task;
     return;
 }
 
@@ -50,6 +50,20 @@ void reset_condition(Condition_t *condition, size_t new_value){
         return;
     }
 
-    atomic_store(&condition->remaining, new_value);
+    platform_mutex_lock(&condition->lock);
+    condition->remaining = new_value;
+    platform_mutex_unlock(&condition->lock);
+    return;
+}
+
+void destroy_condition(Condition_t *condition){
+    if(condition == NULL){
+        return;
+    }
+
+    platform_mutex_destroy(&condition->lock);
+    condition->remaining = 0;
+    condition->task.task = NULL;
+    condition->task.args = NULL;
     return;
 }

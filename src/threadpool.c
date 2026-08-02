@@ -62,21 +62,21 @@ static void worker_entry(void *arg){
 }
 
 size_t how_many_tasks_should_i_take(Worker_t *worker){
-    // size_t count = 0;
+    size_t count = 0;
     // if there are a LOT of tasks, just take as many as possible.
-    // if(threadpool->worker_count * LOCAL_TASKQUEUE_SIZE < threadpool->global_taskqueue.active_count){
-    //     count = worker->local_taskqueue_info.capacity - worker->local_taskqueue_info.active_count;
-    // }
-    // else{
-    //     // dont want to be hoardning tasks, this function will try to distribute fairly.
-    //     // count = threadpool->global_taskqueue.active_count / threadpool->worker_count + (threadpool->global_taskqueue.active_count % threadpool->worker_count != 0);
-    // }
-    // take as many as i can.
-    size_t count = worker->local_taskqueue_info.capacity - worker->local_taskqueue_info.active_count;
-    size_t global_count = worker->threadpool->global_taskqueue.active_count;
-    if(count > global_count){
-        count = global_count;
+    if(worker->threadpool->worker_count * LOCAL_TASKQUEUE_SIZE < worker->threadpool->global_taskqueue.active_count){
+        count = worker->local_taskqueue_info.capacity - worker->local_taskqueue_info.active_count;
     }
+    else{
+        // dont want to be hoardning tasks, this function will try to distribute fairly.
+        // count = threadpool->global_taskqueue.active_count / threadpool->worker_count + (threadpool->global_taskqueue.active_count % threadpool->worker_count != 0);
+    }
+    // take as many as i can.
+    // size_t count = worker->local_taskqueue_info.capacity - worker->local_taskqueue_info.active_count;
+    // size_t global_count = worker->threadpool->global_taskqueue.active_count;
+    // if(count > global_count){
+        // count = global_count;
+    // }
     return count;
 }
 
