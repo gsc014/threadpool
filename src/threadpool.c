@@ -69,7 +69,7 @@ size_t how_many_tasks_should_i_take(Worker_t *worker){
     }
     else{
         // dont want to be hoardning tasks, this function will try to distribute fairly.
-        // count = threadpool->global_taskqueue.active_count / threadpool->worker_count + (threadpool->global_taskqueue.active_count % threadpool->worker_count != 0);
+        count = worker->threadpool->global_taskqueue.active_count / worker->threadpool->worker_count + (worker->threadpool->global_taskqueue.active_count % worker->threadpool->worker_count != 0);
     }
     // take as many as i can.
     // size_t count = worker->local_taskqueue_info.capacity - worker->local_taskqueue_info.active_count;
