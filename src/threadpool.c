@@ -4,7 +4,7 @@
 #include <stdlib.h>
 
 // frees threadpool and all structures within.
-int free_threadpool(Threadpool_t *threadpool){
+static int free_threadpool(Threadpool_t *threadpool){
     if(threadpool == NULL){
         return 0;
     }
@@ -26,7 +26,7 @@ int free_threadpool(Threadpool_t *threadpool){
     return 1;
 }
 
-int join_all_threads(Threadpool_t *threadpool){
+static int join_all_threads(Threadpool_t *threadpool){
     Worker_t *workers = threadpool->workers;
     int result = 0;
 
@@ -56,20 +56,53 @@ void shutdown_threadpool(Threadpool_t *threadpool){
     return;
 }
 
-static void worker_entry(void *arg){
-    Worker_t *worker = (Worker_t *)arg;
-    scheduler(worker);
+// will steal half the tasks from another workers LQ, will put first task in provided task pointer. it will naturally not be put into the new LQ.
+// kinda janky, TODO: clean this up.
+static bool try_steal_half(Worker_t *worker, Task_t *task){
+    if(worker == NULL){
+        return false;
+    }
+    Threadpool_t *threadpool = worker->threadpool;
+    for(size_t i = 1; i < threadpool->worker_capacity; i++){
+        size_t index = (worker->id + i) % threadpool->worker_capacity;
+        if(platform_mutex_trylock(&threadpool->workers[index].local_taskqueue_info.lock) == 0){
+            size_t steal_count = (threadpool->workers[index].local_taskqueue_info.active_count + 1) / 2; // steal half the tasks.
+            if(steal_count == 0){ // pretty sure this will never happen.
+                platform_mutex_unlock(&threadpool->workers[index].local_taskqueue_info.lock);
+                continue;
+            }
+            if(platform_mutex_trylock(&worker->local_taskqueue_info.lock) == 0){
+                dequeue(&threadpool->workers[index].local_taskqueue_info, task); // steal one task for ourselves.
+                size_t remaining_to_move = steal_count - 1;
+                if(0 < remaining_to_move){
+                    if(move_queue(&threadpool->workers[index].local_taskqueue_info, &worker->local_taskqueue_info, remaining_to_move)){
+                        platform_mutex_unlock(&worker->local_taskqueue_info.lock);
+                        platform_mutex_unlock(&threadpool->workers[index].local_taskqueue_info.lock);
+                        return true;
+                    }
+                }
+                // move queue failed, should not happen.
+                platform_mutex_unlock(&worker->local_taskqueue_info.lock);
+                platform_mutex_unlock(&threadpool->workers[index].local_taskqueue_info.lock);
+                return true; // we did actually steal a task, we just did not steal as many as we wanted.
+            }
+            else{
+                platform_mutex_unlock(&threadpool->workers[index].local_taskqueue_info.lock);
+            }
+        }
+    }
+    return false;
 }
 
-size_t how_many_tasks_should_i_take(Worker_t *worker){
+static size_t how_many_tasks_should_i_take(Worker_t *worker){
     size_t count = 0;
     // if there are a LOT of tasks, just take as many as possible.
-    if(worker->threadpool->worker_count * LOCAL_TASKQUEUE_SIZE < worker->threadpool->global_taskqueue.active_count){
+    if(worker->threadpool->worker_capacity * LOCAL_TASKQUEUE_SIZE < worker->threadpool->global_taskqueue.active_count){
         count = worker->local_taskqueue_info.capacity - worker->local_taskqueue_info.active_count;
     }
     else{
         // dont want to be hoardning tasks, this function will try to distribute fairly.
-        count = worker->threadpool->global_taskqueue.active_count / worker->threadpool->worker_count + (worker->threadpool->global_taskqueue.active_count % worker->threadpool->worker_count != 0);
+        count = worker->threadpool->global_taskqueue.active_count / worker->threadpool->worker_capacity + (worker->threadpool->global_taskqueue.active_count % worker->threadpool->worker_capacity != 0);
     }
     // take as many as i can.
     // size_t count = worker->local_taskqueue_info.capacity - worker->local_taskqueue_info.active_count;
@@ -80,7 +113,7 @@ size_t how_many_tasks_should_i_take(Worker_t *worker){
     return count;
 }
 
-void scheduler(Worker_t *worker){
+static void scheduler(Worker_t *worker){
     Threadpool_t *threadpool = worker->threadpool;
     while(atomic_load(&threadpool->shutdown) == false){ // as long as we are not shutting down
         // check out local queue.
@@ -106,27 +139,39 @@ void scheduler(Worker_t *worker){
             platform_mutex_unlock(&worker->local_taskqueue_info.lock);
             // we know its no tasks in LQ, is there any in GQ?
             platform_mutex_lock(&threadpool->global_taskqueue.lock);
-            // as long as there is no work in GQ or no work was found earlier or TP is shutting down, we will wait for work to become available in GQ.
-            while(threadpool->global_taskqueue.active_count == 0 && atomic_load(&threadpool->shutdown) == false){
-                platform_condition_wait(&threadpool->work_available, &threadpool->global_taskqueue.lock);
-            }
-            if(atomic_load(&threadpool->shutdown)){
+
+            if(threadpool->global_taskqueue.active_count == 0){
                 platform_mutex_unlock(&threadpool->global_taskqueue.lock);
-                // platform_mutex_unlock(&worker->local_taskqueue_info.lock);
-                break;
+                if(try_steal_half(worker, &task)){
+                    found_task = true;
+                }
+                else{
+                    platform_mutex_lock(&threadpool->global_taskqueue.lock); // this will basically never happen
+                }
             }
-
-            platform_mutex_lock(&worker->local_taskqueue_info.lock);
-
-            size_t count = how_many_tasks_should_i_take(worker);
-            // moves x tasks from GQ to LQ
-            move_queue(&threadpool->global_taskqueue, &worker->local_taskqueue_info, count);
-            // since we did not have a task before we will need to get one now.
-            found_task = dequeue(&worker->local_taskqueue_info, &task);
-            platform_mutex_unlock(&worker->local_taskqueue_info.lock);
-            platform_mutex_unlock(&threadpool->global_taskqueue.lock);
-            
+            if(found_task == false){
+                // as long as there is no work in GQ or no work was found earlier or TP is shutting down, we will wait for work to become available in GQ.
+                while(threadpool->global_taskqueue.active_count == 0 && atomic_load(&threadpool->shutdown) == false){
+                    platform_condition_wait(&threadpool->work_available, &threadpool->global_taskqueue.lock);
+                }
+                if(atomic_load(&threadpool->shutdown)){
+                    platform_mutex_unlock(&threadpool->global_taskqueue.lock);
+                    // platform_mutex_unlock(&worker->local_taskqueue_info.lock);
+                    break;
+                }
+                // fetch from GQ to LQ
+                platform_mutex_lock(&worker->local_taskqueue_info.lock);
+    
+                size_t count = how_many_tasks_should_i_take(worker);
+                // moves x tasks from GQ to LQ
+                move_queue(&threadpool->global_taskqueue, &worker->local_taskqueue_info, count);
+                // since we did not have a task before we will need to get one now.
+                found_task = dequeue(&worker->local_taskqueue_info, &task);
+                platform_mutex_unlock(&worker->local_taskqueue_info.lock);
+                platform_mutex_unlock(&threadpool->global_taskqueue.lock);
+            }
         }
+
         /*there is work in LQ, thats good.. but there can always be mroe!!! at a certain threshold we will try to
         take some work. if we are <= threshold we will try to aquire the lock to the GQ, if GQ is available we
         will take some work. if it is not available, we dont care. normally a lock will wait until the lock is
@@ -150,6 +195,11 @@ void scheduler(Worker_t *worker){
             task.task(task.args);
         }
     }
+}
+
+static void worker_entry(void *arg){
+    Worker_t *worker = (Worker_t *)arg;
+    scheduler(worker);
 }
 
 // inits the threadpool.

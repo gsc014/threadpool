@@ -118,11 +118,11 @@ bool dequeue(Queue_t *queue, void *element){
     return true;
 }
 
-void move_queue(Queue_t *source, Queue_t *destination, size_t count){
+bool move_queue(Queue_t *source, Queue_t *destination, size_t count){
     if(source == NULL || destination == NULL || source == destination ||
        source->elements == NULL || destination->elements == NULL ||
        source->element_size != destination->element_size || count == 0){
-        return;
+        return false;
     }
 
     if(count > source->active_count){
@@ -135,7 +135,7 @@ void move_queue(Queue_t *source, Queue_t *destination, size_t count){
     }
 
     if(count == 0){
-        return;
+        return false;
     }
 
     size_t source_index = source->tail;
@@ -170,4 +170,5 @@ void move_queue(Queue_t *source, Queue_t *destination, size_t count){
 
     destination->head = destination_index;
     destination->active_count += count;
+    return true;
 }

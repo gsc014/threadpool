@@ -38,8 +38,6 @@ struct Threadpool{
     size_t worker_capacity;
 };
 
-int free_threadpool(Threadpool_t *threadpool);
-void scheduler(Worker_t *worker);
 bool add_task(Threadpool_t *threadpool, void (*task)(void *), void *args);
 bool add_task_bulk(Threadpool_t *threadpool, Queue_t *tasks);
 void shutdown_threadpool(Threadpool_t *threadpool);
