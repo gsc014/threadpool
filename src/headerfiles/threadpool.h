@@ -18,8 +18,6 @@
 // we dont want to fill tasks all the time, at what capacity should we start moving tasks from the global queue to the local queue?
 #define LOCAL_QUEUE_LOW_THRESHOLD 4
 
-#define WAITINGQUEUE_SIZE 64
-
 typedef struct Threadpool Threadpool_t;
 
 typedef struct{
@@ -32,7 +30,8 @@ typedef struct{
 struct Threadpool{
     atomic_bool shutdown; // atomic bool that indicates if the threadpool is shutting down. If it is, then all threads will finish their current task and then exit.
     Platform_condition_t work_available; // condition variable for signaling when work is available
-    Queue_t global_taskqueue; // queue of tasks that are ready to be executed.
+    // Queue_t global_taskqueue; // queue of tasks that are ready to be executed.
+    Dual_queue_t global_taskqueue; // queue of tasks that are ready to be executed.
     Worker_t *workers;
     size_t worker_count;
     size_t worker_capacity;
