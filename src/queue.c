@@ -223,6 +223,12 @@ void dequeue_dual(Dual_queue_t *dual_queue, void *element){
     return;
 }
 
+bool dequeue_dual_select_index(Dual_queue_t *dual_queue, void *element, bool index){
+    Queue_t *queue = &dual_queue->queues[index];
+    bool result = dequeue(queue, element);
+    return result;
+}
+
 void switch_active_queue(Dual_queue_t *dual_queue){
     atomic_fetch_xor(&dual_queue->active_queue_index, true);
     return;
@@ -250,9 +256,9 @@ void move_queue_single_to_dual(Queue_t *source, Dual_queue_t *destination, size_
     return;
 }
 
-// assumes source and destination is locked
+// assumes source active queue and destination is locked
 void move_queue_dual_to_single(Dual_queue_t *source, Queue_t *destination, size_t count, bool from_active_queue){
-    bool active_index = atomic_load(&source->active_queue_index);
+    bool active_index = &source->active_queue_index;
     bool index = 0;
     if(from_active_queue){
         index = active_index;
@@ -261,10 +267,9 @@ void move_queue_dual_to_single(Dual_queue_t *source, Queue_t *destination, size_
         index = !active_index;
     }
     Queue_t *source_queue = &source->queues[index];
-
+    
     // platform_mutex_lock(&source_queue->lock);
     // platform_mutex_lock(&destination->lock);
-
     move_queue(source_queue, destination, count);
 
     if(source_queue->active_count == 0){
@@ -273,5 +278,51 @@ void move_queue_dual_to_single(Dual_queue_t *source, Queue_t *destination, size_
 
     // platform_mutex_unlock(&destination->lock);
     // platform_mutex_unlock(&source_queue->lock);
+    return;
+}
+
+// will manage to lock active queue sometimes by luck.
+bool mutex_try_lock_active_queue(Dual_queue_t *dual_queue){
+    bool active_index = atomic_load(&dual_queue->active_queue_index);
+    if(platform_mutex_trylock(&dual_queue->queues[active_index].lock) == 0){
+        if(active_index == atomic_load(&dual_queue->active_queue_index)){
+            return true;
+        }
+        platform_mutex_unlock(&dual_queue->queues[active_index].lock);
+    }
+    return false;
+}
+
+bool mutex_lock_dual_queue(Dual_queue_t *dual_queue, bool active_queue){
+    bool active_index = atomic_load(&dual_queue->active_queue_index);
+    bool index = 0;
+    if(active_queue){
+        index = active_index;
+    }
+    else{
+        index = !active_index;
+    }
+    while(1){
+        platform_mutex_lock(&dual_queue->queues[index].lock);
+        if(index == atomic_load(&dual_queue->active_queue_index)){
+            return true;
+        }
+        platform_mutex_unlock(&dual_queue->queues[index].lock);
+    }
+}
+bool mutex_lock_active_queue(Dual_queue_t *dual_queue){
+    bool active_index = atomic_load(&dual_queue->active_queue_index);
+    while(1){
+        platform_mutex_lock(&dual_queue->queues[active_index].lock);
+        if(active_index == atomic_load(&dual_queue->active_queue_index)){
+            return true;
+        }
+        platform_mutex_unlock(&dual_queue->queues[active_index].lock);
+    }
+}
+
+void mutex_unlock_active_queue(Dual_queue_t *dual_queue){
+    bool active_index = atomic_load(&dual_queue->active_queue_index);
+    platform_mutex_unlock(&dual_queue->queues[active_index].lock);
     return;
 }
