@@ -34,7 +34,7 @@ void free_queue(Queue_t *queue);
 /* The caller must hold the relevant queue lock while using these operations. */
 bool enlarge_queue(Queue_t *queue);
 bool enqueue(Queue_t *queue, const void *element);
-bool dequeue(Queue_t *queue, void *element);
+bool dequeue(Queue_t *queue, void *element, bool from_back); // if from_back is true, will dequeue from the back of the queue, otherwise will dequeue from the front of the queue.
 size_t move_queue(Queue_t *source, Queue_t *destination, size_t count); //returns how many elements were moved
 
 void free_dual_queue(Dual_queue_t *dual_queue);

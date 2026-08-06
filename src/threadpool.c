@@ -70,7 +70,7 @@ static bool try_steal_half(Worker_t *worker, Task_t *task){
                 continue;
             }
             if(platform_mutex_trylock(&worker->local_taskqueue_info.lock) == 0){
-                dequeue(&threadpool->workers[index].local_taskqueue_info, task); // steal one task for ourselves.
+                dequeue(&threadpool->workers[index].local_taskqueue_info, task, 1); // steal one task for ourselves.
                 size_t remaining_to_move = steal_count - 1;
                 if(0 < remaining_to_move){
                     if(move_queue(&threadpool->workers[index].local_taskqueue_info, &worker->local_taskqueue_info, remaining_to_move)){
@@ -97,7 +97,7 @@ static bool try_steal_half(Worker_t *worker, Task_t *task){
 static size_t calculate_count(Worker_t *worker, Queue_t *victim_queue){
     assert(platform_mutex_is_owned_by_current_thread(&worker->local_taskqueue_info.lock));
     assert(platform_mutex_is_owned_by_current_thread(&victim_queue->lock));
-    
+
     Threadpool_t *threadpool = worker->threadpool;
     size_t free_slots = worker->local_taskqueue_info.capacity - worker->local_taskqueue_info.active_count;
     size_t fair_count = victim_queue->active_count / threadpool->worker_capacity + (victim_queue->active_count % threadpool->worker_capacity != 0);
@@ -110,7 +110,7 @@ static void scheduler(Worker_t *worker){
         Task_t task = {.task = NULL, .args = NULL};
         // fast track: check local queue
         platform_mutex_lock(&worker->local_taskqueue_info.lock);
-        bool found_task = dequeue(&worker->local_taskqueue_info, &task);
+        bool found_task = dequeue(&worker->local_taskqueue_info, &task, 0);
         if(found_task){
             // dequeue(&worker->local_taskqueue_info, &task);
             atomic_fetch_sub(&worker->threadpool->global_taskqueue.queued_task_count, 1);
@@ -141,7 +141,7 @@ static void scheduler(Worker_t *worker){
             size_t count = calculate_count(worker, active_queue);
             move_queue(active_queue, &worker->local_taskqueue_info, count);
             // move_queue_dual_to_single(&threadpool->global_taskqueue, &worker->local_taskqueue_info, count, true);
-            found_task = dequeue(&worker->local_taskqueue_info, &task);
+            found_task = dequeue(&worker->local_taskqueue_info, &task, 0);
             platform_mutex_unlock(&worker->local_taskqueue_info.lock);
             platform_mutex_unlock(&active_queue->lock);
         }
@@ -158,7 +158,7 @@ static void scheduler(Worker_t *worker){
             else if(buffer_queue->active_count != 0){
                 // swap queues
                 // found_task = dequeue_dual_select_index(&threadpool->global_taskqueue, &task, !active_index);
-                found_task = dequeue(buffer_queue, &task);
+                found_task = dequeue(buffer_queue, &task, 0);
                 platform_mutex_lock(&threadpool->global_taskqueue.switch_lock);
                 atomic_store(&threadpool->global_taskqueue.active_queue_index, !active_index);
                 platform_mutex_unlock(&threadpool->global_taskqueue.switch_lock);
@@ -356,23 +356,17 @@ benchmark where time is spent. how much time is wasted on locks etc.?
 make a debug mode where you can see statistics, but only in debug mode.
 optimize types in structs to reduce memory.
 make sure that using conditions can be used by main thread functions.
-it is bad that add_task only adds one at a time, maybe do so that as long as there
-is enough work to do, we will store up tasks before we send them to the global queue
 
-either multiple global queues, or one queue with multiple locks, so parts of the queue can be accessed at the same time.
 work stealing can be optimized, we just use trylock and that can be pure luck.
 when stealing, take tasks from opposite end of the queue, maybe that can reduce locking? maybe this can use 2 locks?
 resizing of queues, we just resize with a fixed size, what if the size is too small? then we need to resize again.
 
 Workers have a fixed local queue size, dont allcate them, just store as fixed array.
 should a task have a priority?
-should a task have a size? so stealing etc will be more fair? a small tash is currently equal to a large task.
+should a task have a size? so stealing etc will be more fair? a small task is currently equal to a large task.
 can this be done at startup? we can calculate the approximate time/value for every task?
 
 can two small tasks be ran back to back instead of going into the scheduler?
 limit scheduler calls? we dont need to go into the scheduler every single time, we know that we already have a/multiple tasks.
 make a function that will make it easier to add tasks to the threadpool. thinking mostly of functions and arguments
-
-make a general lock implementation that will check if the lock is already locked by yourself. this will make so that some
-supporting functions can call that to know if its already locked, but we dont want to lock again if we already have it
 */

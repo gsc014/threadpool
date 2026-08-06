@@ -108,7 +108,7 @@ bool enqueue(Queue_t *queue, const void *element){
     return true;
 }
 
-bool dequeue(Queue_t *queue, void *element){
+bool dequeue(Queue_t *queue, void *element, bool from_back){
     if(queue == NULL || element == NULL || queue->elements == NULL){
         return false;
     }
@@ -119,11 +119,18 @@ bool dequeue(Queue_t *queue, void *element){
         return false;
     }
 
-    memcpy(element,
-           (char *)queue->elements + (queue->tail * queue->element_size),
-           queue->element_size);
-    
-    queue->tail = (queue->tail + 1) % queue->capacity;
+    if(from_back){
+        size_t back_index = (queue->head + queue->capacity - 1) % queue->capacity;
+        memcpy(element,
+               (char *)queue->elements + back_index * queue->element_size,
+               queue->element_size);
+        queue->head = back_index;
+    } else {
+        memcpy(element,
+               (char *)queue->elements + (queue->tail * queue->element_size),
+               queue->element_size);
+        queue->tail = (queue->tail + 1) % queue->capacity;
+    }
     queue->active_count--;
     return true;
 }
