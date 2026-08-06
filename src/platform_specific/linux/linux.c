@@ -13,6 +13,18 @@ typedef struct{
     void *argument;
 } Linux_thread_start_t;
 
+#ifndef NDEBUG
+static atomic_uintptr_t next_thread_token = 1;
+static _Thread_local uintptr_t current_thread_token;
+
+static uintptr_t get_current_thread_token(void){
+    if(current_thread_token == 0){
+        current_thread_token = atomic_fetch_add(&next_thread_token, 1);
+    }
+    return current_thread_token;
+}
+#endif
+
 static void *linux_thread_start(void *raw_start){
     Linux_thread_start_t *start = raw_start;
     Platform_thread_fn function = start->function;
@@ -78,6 +90,9 @@ int platform_mutex_init(Platform_mutex_t *mutex){
 
     int result = pthread_mutex_init(&mutex->native, NULL);
     if(result == 0){
+#ifndef NDEBUG
+        atomic_init(&mutex->owner_token, 0);
+#endif
         mutex->initialized = true;
     }
     return result;
@@ -99,22 +114,55 @@ int platform_mutex_lock(Platform_mutex_t *mutex){
     if(mutex == NULL || !mutex->initialized){
         return EINVAL;
     }
-    return pthread_mutex_lock(&mutex->native);
+    int result = pthread_mutex_lock(&mutex->native);
+#ifndef NDEBUG
+    if(result == 0){
+        atomic_store(&mutex->owner_token, get_current_thread_token());
+    }
+#endif
+    return result;
 }
 
 int platform_mutex_unlock(Platform_mutex_t *mutex){
     if(mutex == NULL || !mutex->initialized){
         return EINVAL;
     }
-    return pthread_mutex_unlock(&mutex->native);
+#ifndef NDEBUG
+    if(!platform_mutex_is_owned_by_current_thread(mutex)){
+        return EPERM;
+    }
+    atomic_store(&mutex->owner_token, 0);
+#endif
+    int result = pthread_mutex_unlock(&mutex->native);
+#ifndef NDEBUG
+    if(result != 0){
+        atomic_store(&mutex->owner_token, get_current_thread_token());
+    }
+#endif
+    return result;
 }
 
 int platform_mutex_trylock(Platform_mutex_t *mutex){
     if(mutex == NULL || !mutex->initialized){
         return EINVAL;
     }
-    return pthread_mutex_trylock(&mutex->native);
+    int result = pthread_mutex_trylock(&mutex->native);
+#ifndef NDEBUG
+    if(result == 0){
+        atomic_store(&mutex->owner_token, get_current_thread_token());
+    }
+#endif
+    return result;
 }
+
+#ifndef NDEBUG
+bool platform_mutex_is_owned_by_current_thread(const Platform_mutex_t *mutex){
+    if(mutex == NULL || !mutex->initialized){
+        return false;
+    }
+    return atomic_load(&mutex->owner_token) == get_current_thread_token();
+}
+#endif
 
 int platform_condition_init(Platform_condition_t *condition){
     if(condition == NULL || condition->initialized){
@@ -148,7 +196,17 @@ int platform_condition_wait(
        mutex == NULL || !mutex->initialized){
         return EINVAL;
     }
-    return pthread_cond_wait(&condition->native, &mutex->native);
+#ifndef NDEBUG
+    if(!platform_mutex_is_owned_by_current_thread(mutex)){
+        return EPERM;
+    }
+    atomic_store(&mutex->owner_token, 0);
+#endif
+    int result = pthread_cond_wait(&condition->native, &mutex->native);
+#ifndef NDEBUG
+    atomic_store(&mutex->owner_token, get_current_thread_token());
+#endif
+    return result;
 }
 
 int platform_condition_signal(Platform_condition_t *condition){

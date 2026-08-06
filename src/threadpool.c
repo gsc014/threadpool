@@ -95,6 +95,9 @@ static bool try_steal_half(Worker_t *worker, Task_t *task){
 // calculate how many tasks should be taken from the global queue to the local queue.
 // assumes that the global queue is locked and the local queue is locked. will return 0 if no tasks should be taken.
 static size_t calculate_count(Worker_t *worker, Queue_t *victim_queue){
+    assert(platform_mutex_is_owned_by_current_thread(&worker->local_taskqueue_info.lock));
+    assert(platform_mutex_is_owned_by_current_thread(&victim_queue->lock));
+    
     Threadpool_t *threadpool = worker->threadpool;
     size_t free_slots = worker->local_taskqueue_info.capacity - worker->local_taskqueue_info.active_count;
     size_t fair_count = victim_queue->active_count / threadpool->worker_capacity + (victim_queue->active_count % threadpool->worker_capacity != 0);

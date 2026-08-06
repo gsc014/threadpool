@@ -5,6 +5,7 @@
 #include <stddef.h>
 #include <stdatomic.h>
 
+#include <assert.h>
 #include "../platform_specific/api.h"
 
 typedef struct{

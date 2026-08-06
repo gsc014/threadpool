@@ -52,10 +52,12 @@ void free_queue(Queue_t *queue){
 
 // will enlarge the queue by approximately 20 percent.
 bool enlarge_queue(Queue_t *queue){
+    
     if(queue == NULL || queue->elements == NULL || queue->capacity == 0){
         printf("Invalid parameter for enlarge_queue.\n");
         return false;
     }
+    assert_mutex_owned(&queue->lock);
 
     size_t new_capacity = queue->capacity + queue->capacity / 5;
     if(new_capacity == queue->capacity){
@@ -89,6 +91,8 @@ bool enqueue(Queue_t *queue, const void *element){
         return false;
     }
 
+    assert_mutex_owned(&queue->lock);
+
     if(queue->active_count == queue->capacity){
         if(enlarge_queue(queue) == false){
             return false;
@@ -105,6 +109,12 @@ bool enqueue(Queue_t *queue, const void *element){
 }
 
 bool dequeue(Queue_t *queue, void *element){
+    if(queue == NULL || element == NULL || queue->elements == NULL){
+        return false;
+    }
+
+    assert_mutex_owned(&queue->lock);
+
     if(queue->active_count == 0){
         return false;
     }
@@ -125,6 +135,9 @@ size_t move_queue(Queue_t *source, Queue_t *destination, size_t count){
        source->element_size != destination->element_size || count == 0){
         return 0;
     }
+
+    assert_mutex_owned(&source->lock);
+    assert_mutex_owned(&destination->lock);
 
     if(count > source->active_count){
         count = source->active_count;

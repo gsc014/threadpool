@@ -3,6 +3,8 @@
 
 #include <stdbool.h>
 #include <stdint.h>
+#include <stdatomic.h>
+#include <assert.h>
 
 #if defined(_WIN32)
 #ifndef WIN32_LEAN_AND_MEAN
@@ -19,6 +21,13 @@
 #error "Only Linux and Windows are currently supported."
 #endif
 
+#ifndef NDEBUG
+#define assert_mutex_owned(mutex) \
+    assert(platform_mutex_is_owned_by_current_thread((mutex)))
+#else
+#define assert_mutex_owned(mutex) ((void)0)
+#endif
+
 typedef void (*Platform_thread_fn)(void *argument);
 
 #if defined(_WIN32)
@@ -30,6 +39,7 @@ typedef struct{
 
 typedef struct{
     SRWLOCK native;
+    atomic_uintptr_t owner_token;
     bool initialized;
 } Platform_mutex_t;
 
@@ -51,6 +61,7 @@ typedef struct{
 
 typedef struct{
     pthread_mutex_t native;
+    atomic_uintptr_t owner_token;
     bool initialized;
 } Platform_mutex_t;
 
@@ -84,6 +95,9 @@ int platform_mutex_destroy(Platform_mutex_t *mutex);
 int platform_mutex_lock(Platform_mutex_t *mutex);
 int platform_mutex_unlock(Platform_mutex_t *mutex);
 int platform_mutex_trylock(Platform_mutex_t *mutex);
+#ifndef NDEBUG
+bool platform_mutex_is_owned_by_current_thread(const Platform_mutex_t *mutex);
+#endif
 
 int platform_condition_init(Platform_condition_t *condition);
 int platform_condition_destroy(Platform_condition_t *condition);

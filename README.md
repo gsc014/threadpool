@@ -10,3 +10,7 @@ cc -O2 -std=c11 -Wall -Wextra -Wpedantic -Werror \
   -pthread -o threadpool
 
 ./threadpool
+
+Lock ownership checks are enabled by default. For a release build without these checks, add `-DNDEBUG`:
+
+cc -O2 -DNDEBUG -std=c11 ...
