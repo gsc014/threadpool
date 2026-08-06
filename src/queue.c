@@ -118,11 +118,12 @@ bool dequeue(Queue_t *queue, void *element){
     return true;
 }
 
-bool move_queue(Queue_t *source, Queue_t *destination, size_t count){
+// returns how many elements were moved
+size_t move_queue(Queue_t *source, Queue_t *destination, size_t count){
     if(source == NULL || destination == NULL || source == destination ||
        source->elements == NULL || destination->elements == NULL ||
        source->element_size != destination->element_size || count == 0){
-        return false;
+        return 0;
     }
 
     if(count > source->active_count){
@@ -135,7 +136,7 @@ bool move_queue(Queue_t *source, Queue_t *destination, size_t count){
     }
 
     if(count == 0){
-        return false;
+        return 0;
     }
 
     size_t source_index = source->tail;
@@ -170,7 +171,7 @@ bool move_queue(Queue_t *source, Queue_t *destination, size_t count){
 
     destination->head = destination_index;
     destination->active_count += count;
-    return true;
+    return count;
 }
 
 int init_dual_queue(Dual_queue_t *dual_queue, size_t element_size, size_t capacity){
@@ -179,6 +180,8 @@ int init_dual_queue(Dual_queue_t *dual_queue, size_t element_size, size_t capaci
         return -1;
     }
 
+    atomic_init(&dual_queue->active_queue_index, false);
+    atomic_init(&dual_queue->queued_task_count, 0);
     if(init_queue(&dual_queue->queues[0], element_size, capacity) != 0){
         return -1;
     }
@@ -186,7 +189,11 @@ int init_dual_queue(Dual_queue_t *dual_queue, size_t element_size, size_t capaci
         free_queue(&dual_queue->queues[0]);
         return -1;
     }
-    atomic_init(&dual_queue->active_queue_index, false);
+    if (platform_mutex_init(&dual_queue->switch_lock) != 0) {
+        free_queue(&dual_queue->queues[1]);
+        free_queue(&dual_queue->queues[0]);
+        return -1;
+    }
 
     return 0;
 }
@@ -195,134 +202,40 @@ void free_dual_queue(Dual_queue_t *dual_queue){
     if(dual_queue == NULL){
         return;
     }
-
+    platform_mutex_destroy(&dual_queue->switch_lock);
     free_queue(&dual_queue->queues[0]);
     free_queue(&dual_queue->queues[1]);
 }
 
-void enqueue_dual(Dual_queue_t *dual_queue, const void *element){
-    bool active_index = atomic_load(&dual_queue->active_queue_index);
-    Queue_t *active_queue = &dual_queue->queues[active_index];
-
-    platform_mutex_lock(&active_queue->lock);
-    enqueue(active_queue, element);
-    platform_mutex_unlock(&active_queue->lock);
-
-    return;
-}
-
-// will put a an element from the active queue into the provided pointer.
-void dequeue_dual(Dual_queue_t *dual_queue, void *element){
-    bool active_index = atomic_load(&dual_queue->active_queue_index);
-    Queue_t *active_queue = &dual_queue->queues[active_index];
-
-    // platform_mutex_lock(&active_queue->lock);
-    bool result = dequeue(active_queue, element);
-    // platform_mutex_unlock(&active_queue->lock);
-
-    return;
-}
-
-bool dequeue_dual_select_index(Dual_queue_t *dual_queue, void *element, bool index){
-    Queue_t *queue = &dual_queue->queues[index];
-    bool result = dequeue(queue, element);
-    return result;
-}
-
-void switch_active_queue(Dual_queue_t *dual_queue){
-    atomic_fetch_xor(&dual_queue->active_queue_index, true);
-    return;
-}
-
-// will move count elements from the source queue to the destination dual queue. if to_active_queue is true, it will move to the active queue, otherwise it will move to the buffer queue.
-void move_queue_single_to_dual(Queue_t *source, Dual_queue_t *destination, size_t count, bool to_active_queue){
-    bool active_index = atomic_load(&destination->active_queue_index);
-    bool index = 0;
-    if(to_active_queue){
-        index = active_index;
-    }
-    else{
-        index = !active_index;
-    }
-    Queue_t *target_queue = &destination->queues[index];
-
-    platform_mutex_lock(&source->lock);
-    platform_mutex_lock(&target_queue->lock);
-
-    move_queue(source, target_queue, count);
-
-    platform_mutex_unlock(&target_queue->lock);
-    platform_mutex_unlock(&source->lock);
-    return;
-}
-
-// assumes source active queue and destination is locked
-void move_queue_dual_to_single(Dual_queue_t *source, Queue_t *destination, size_t count, bool from_active_queue){
-    bool active_index = &source->active_queue_index;
-    bool index = 0;
-    if(from_active_queue){
-        index = active_index;
-    }
-    else{
-        index = !active_index;
-    }
-    Queue_t *source_queue = &source->queues[index];
-    
-    // platform_mutex_lock(&source_queue->lock);
-    // platform_mutex_lock(&destination->lock);
-    move_queue(source_queue, destination, count);
-
-    if(source_queue->active_count == 0){
-        switch_active_queue(source);
-    }
-
-    // platform_mutex_unlock(&destination->lock);
-    // platform_mutex_unlock(&source_queue->lock);
-    return;
-}
-
 // will manage to lock active queue sometimes by luck.
-bool mutex_try_lock_active_queue(Dual_queue_t *dual_queue){
+Queue_t *mutex_try_lock_active_queue(Dual_queue_t *dual_queue){
     bool active_index = atomic_load(&dual_queue->active_queue_index);
     if(platform_mutex_trylock(&dual_queue->queues[active_index].lock) == 0){
         if(active_index == atomic_load(&dual_queue->active_queue_index)){
-            return true;
+            return &dual_queue->queues[active_index];
         }
         platform_mutex_unlock(&dual_queue->queues[active_index].lock);
     }
-    return false;
+    return NULL;
 }
 
-bool mutex_lock_dual_queue(Dual_queue_t *dual_queue, bool active_queue){
-    bool active_index = atomic_load(&dual_queue->active_queue_index);
-    bool index = 0;
-    if(active_queue){
-        index = active_index;
-    }
-    else{
-        index = !active_index;
-    }
-    while(1){
-        platform_mutex_lock(&dual_queue->queues[index].lock);
-        if(index == atomic_load(&dual_queue->active_queue_index)){
-            return true;
-        }
-        platform_mutex_unlock(&dual_queue->queues[index].lock);
-    }
-}
-bool mutex_lock_active_queue(Dual_queue_t *dual_queue){
-    bool active_index = atomic_load(&dual_queue->active_queue_index);
-    while(1){
-        platform_mutex_lock(&dual_queue->queues[active_index].lock);
-        if(active_index == atomic_load(&dual_queue->active_queue_index)){
-            return true;
-        }
-        platform_mutex_unlock(&dual_queue->queues[active_index].lock);
-    }
-}
+Queue_t *mutex_lock_dual_queue(Dual_queue_t *dual, bool want_active)
+{
+    while(1) {
+        bool active = atomic_load(&dual->active_queue_index);
+        bool index = want_active ? active : !active;
 
-void mutex_unlock_active_queue(Dual_queue_t *dual_queue){
-    bool active_index = atomic_load(&dual_queue->active_queue_index);
-    platform_mutex_unlock(&dual_queue->queues[active_index].lock);
-    return;
+        platform_mutex_lock(&dual->queues[index].lock);
+
+        bool current_active =
+            atomic_load(&dual->active_queue_index);
+        bool expected =
+            want_active ? current_active : !current_active;
+
+        if (index == expected) {
+            return &dual->queues[index];
+        }
+
+        platform_mutex_unlock(&dual->queues[index].lock);
+    }
 }

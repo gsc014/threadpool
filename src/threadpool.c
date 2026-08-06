@@ -19,7 +19,8 @@ static int free_threadpool(Threadpool_t *threadpool){
         platform_condition_destroy(&threadpool->work_available);
     }
 
-    free_queue(&threadpool->global_taskqueue);
+    free_dual_queue(&threadpool->global_taskqueue);
+    platform_mutex_destroy(&threadpool->work_wait_lock);
     free(threadpool->workers);
     free(threadpool);
 
@@ -46,10 +47,10 @@ void shutdown_threadpool(Threadpool_t *threadpool){
         return;
     }
     // wake all sleeping threads so they can exit.
-    platform_mutex_lock(&threadpool->global_taskqueue.lock);
+    platform_mutex_lock(&threadpool->work_wait_lock);
     atomic_store(&threadpool->shutdown, true);
     platform_condition_broadcast(&threadpool->work_available);
-    platform_mutex_unlock(&threadpool->global_taskqueue.lock);
+    platform_mutex_unlock(&threadpool->work_wait_lock);
     if(join_all_threads(threadpool) == 0){
         free_threadpool(threadpool);
     }
@@ -91,95 +92,13 @@ static bool try_steal_half(Worker_t *worker, Task_t *task){
     return false;
 }
 
-static size_t how_many_tasks_should_i_take(Worker_t *worker){
-    size_t count = 0;
-    // if there are a LOT of tasks, just take as many as possible.
-    if(worker->threadpool->worker_capacity * LOCAL_TASKQUEUE_SIZE < worker->threadpool->global_taskqueue.active_count){
-        count = worker->local_taskqueue_info.capacity - worker->local_taskqueue_info.active_count;
-    }
-    else{
-        // dont want to be hoardning tasks, this function will try to distribute fairly.
-        count = worker->threadpool->global_taskqueue.active_count / worker->threadpool->worker_capacity + (worker->threadpool->global_taskqueue.active_count % worker->threadpool->worker_capacity != 0);
-    }
-    // take as many as i can.
-    // size_t count = worker->local_taskqueue_info.capacity - worker->local_taskqueue_info.active_count;
-    // size_t global_count = worker->threadpool->global_taskqueue.active_count;
-    // if(count > global_count){
-        // count = global_count;
-    // }
-    return count;
-}
-
-static void local_queue_scheduler(Worker_t *worker){
-    Threadpool_t *threadpool = worker->threadpool;
-    while(atomic_load(&threadpool->shutdown) == false){
-        platform_mutex_lock(&worker->local_taskqueue_info.lock);
-        if(worker->local_taskqueue_info.active_count == 0){
-            platform_mutex_unlock(&worker->local_taskqueue_info.lock);
-            return; // we do not have any more work in LQ
-        }
-        Task_t task = {.task = NULL, .args = NULL};
-        bool found_task = dequeue(&worker->local_taskqueue_info, &task);
-        platform_mutex_unlock(&worker->local_taskqueue_info.lock);
-        if(found_task == true){
-            task.task(task.args);
-        }
-    }
-}
-
-static void load_LQ_from_GQ(Worker_t *worker){
-    Threadpool_t *threadpool = worker->threadpool;
-    platform_mutex_lock(&threadpool->global_taskqueue.lock);
-    size_t count = how_many_tasks_should_i_take(worker);
-    move_queue(&threadpool->global_taskqueue, &worker->local_taskqueue_info, count);
-    platform_mutex_unlock(&threadpool->global_taskqueue.lock);
-}
-
-bool platform_mutex_lock_active_queue(Dual_queue_t *dual_queue){
-    // bool active_index = atomic_load(&dual_queue->active_queue_index);
-    // platform_mutex_lock(&dual_queue->queues[active_index].lock);
-    // bool actual_index = atomic_load(&dual_queue->active_queue_index);
-    // if(active_index == actual_index){
-    //     return;
-    // }
-    // platform_mutex_lock(&dual_queue->queues[actual_index].lock);
-    // platform_mutex_unlock(&dual_queue->queues[active_index].lock);
-    // return;
-    bool active_index = atomic_load(&dual_queue->active_queue_index);
-    while(1){
-        platform_mutex_lock(&dual_queue->queues[active_index].lock);
-        if(active_index == atomic_load(&dual_queue->active_queue_index)){
-            return active_index;
-        }
-        active_index = atomic_load(&dual_queue->active_queue_index);
-    }    
-}
-
-bool platform_mutex_trylock_active_queue(Dual_queue_t *dual_queue){
-    bool active_index = atomic_load(&dual_queue->active_queue_index);
-    while(1){
-        if(platform_mutex_trylock(&dual_queue->queues[active_index].lock) == 0){
-            if(active_index == atomic_load(&dual_queue->active_queue_index)){
-                return true;
-            }
-            platform_mutex_unlock(&dual_queue->queues[active_index].lock);
-        }
-        active_index = atomic_load(&dual_queue->active_queue_index);
-    }    
-}
-
 // calculate how many tasks should be taken from the global queue to the local queue.
+// assumes that the global queue is locked and the local queue is locked. will return 0 if no tasks should be taken.
 static size_t calculate_count(Worker_t *worker, Queue_t *victim_queue){
     Threadpool_t *threadpool = worker->threadpool;
-    size_t count = 0;
-    size_t max_count = worker->local_taskqueue_info.capacity - worker->local_taskqueue_info.active_count;
-    if(threadpool->worker_capacity * LOCAL_TASKQUEUE_SIZE - max_count < victim_queue->active_count){
-        return max_count;
-    }
-    else{
-        count = victim_queue->active_count / threadpool->worker_capacity + (victim_queue->active_count % threadpool->worker_capacity != 0);
-    }
-    return count;
+    size_t free_slots = worker->local_taskqueue_info.capacity - worker->local_taskqueue_info.active_count;
+    size_t fair_count = victim_queue->active_count / threadpool->worker_capacity + (victim_queue->active_count % threadpool->worker_capacity != 0);
+    return fair_count < free_slots ? fair_count : free_slots;
 }
 
 static void scheduler(Worker_t *worker){
@@ -188,13 +107,17 @@ static void scheduler(Worker_t *worker){
         Task_t task = {.task = NULL, .args = NULL};
         // fast track: check local queue
         platform_mutex_lock(&worker->local_taskqueue_info.lock);
-        if(0 < worker->local_taskqueue_info.active_count){
-            dequeue(&worker->local_taskqueue_info, &task);
+        bool found_task = dequeue(&worker->local_taskqueue_info, &task);
+        if(found_task){
+            // dequeue(&worker->local_taskqueue_info, &task);
+            atomic_fetch_sub(&worker->threadpool->global_taskqueue.queued_task_count, 1);
             if(worker->local_taskqueue_info.active_count <= LOCAL_QUEUE_LOW_THRESHOLD){
-                if(mutex_try_lock_active_queue(&threadpool->global_taskqueue)){
-                    size_t count = calculate_count(worker, &threadpool->global_taskqueue.queues[threadpool->global_taskqueue.active_queue_index]);
-                    move_queue_dual_to_single(&threadpool->global_taskqueue, &worker->local_taskqueue_info, count, true);
-                    mutex_unlock_active_queue(&threadpool->global_taskqueue);
+                Queue_t *active_queue = mutex_try_lock_active_queue(&threadpool->global_taskqueue);
+                if(active_queue != NULL){
+                    size_t count = calculate_count(worker, active_queue);
+                    move_queue(active_queue, &worker->local_taskqueue_info, count);
+                    // move_queue_dual_to_single(&threadpool->global_taskqueue, &worker->local_taskqueue_info, count, true);
+                    platform_mutex_unlock(&active_queue->lock);
                 }
             }
             platform_mutex_unlock(&worker->local_taskqueue_info.lock);
@@ -204,50 +127,59 @@ static void scheduler(Worker_t *worker){
         platform_mutex_unlock(&worker->local_taskqueue_info.lock);
 
         // slow track: no task in local queue.
-        mutex_lock_dual_queue(&threadpool->global_taskqueue, true); // lock active queue
-        Queue_t *active_queue = &threadpool->global_taskqueue.queues[atomic_load(&threadpool->global_taskqueue.active_queue_index)];
-        bool active_index = &threadpool->global_taskqueue.active_queue_index;
-        if(active_queue->active_count == 0){
-            mutex_lock_dual_queue(&threadpool->global_taskqueue, false); // lock buffer queue
-            Queue_t *buffer_queue = &threadpool->global_taskqueue.queues[!active_index];
+        // bool found_task = false;
+
+        Queue_t *active_queue = mutex_lock_dual_queue(&threadpool->global_taskqueue, true); // lock active queue
+        // Queue_t *active_queue = &threadpool->global_taskqueue.queues[atomic_load(&threadpool->global_taskqueue.active_queue_index)];
+        bool active_index = atomic_load(&threadpool->global_taskqueue.active_queue_index);
+        if(active_queue->active_count != 0){
+            // if there is work in active queue.
+            platform_mutex_lock(&worker->local_taskqueue_info.lock);
+            size_t count = calculate_count(worker, active_queue);
+            move_queue(active_queue, &worker->local_taskqueue_info, count);
+            // move_queue_dual_to_single(&threadpool->global_taskqueue, &worker->local_taskqueue_info, count, true);
+            found_task = dequeue(&worker->local_taskqueue_info, &task);
+            platform_mutex_unlock(&worker->local_taskqueue_info.lock);
+            platform_mutex_unlock(&active_queue->lock);
+        }
+        else if(active_queue->active_count == 0){
+            // if there is no work in active queue
+            Queue_t *buffer_queue = mutex_lock_dual_queue(&threadpool->global_taskqueue, false); // lock buffer queue
+            // Queue_t *buffer_queue = &threadpool->global_taskqueue.queues[!active_index];
             if(buffer_queue->active_count == 0){
                 // steal from other workers.
+                platform_mutex_unlock(&buffer_queue->lock);
+                platform_mutex_unlock(&active_queue->lock);
                 found_task = try_steal_half(worker, &task);
             }
-            else if(0 < buffer_queue->active_count){
+            else if(buffer_queue->active_count != 0){
                 // swap queues
-                found_task = dequeue_dual_select_index(&threadpool->global_taskqueue, &task, !active_index);
+                // found_task = dequeue_dual_select_index(&threadpool->global_taskqueue, &task, !active_index);
+                found_task = dequeue(buffer_queue, &task);
                 platform_mutex_lock(&threadpool->global_taskqueue.switch_lock);
                 atomic_store(&threadpool->global_taskqueue.active_queue_index, !active_index);
                 platform_mutex_unlock(&threadpool->global_taskqueue.switch_lock);
+                platform_mutex_unlock(&buffer_queue->lock);
+                platform_mutex_unlock(&active_queue->lock);
             }
-            // while we still have lock on both queues.
-            if(found_task == false){
-                // we have no work in either queue, we will wait for work to be added to the global queue.
-                while(active_queue->active_count == 0 && buffer_queue->active_count == 0 && atomic_load(&threadpool->shutdown) == false){
-                    platform_condition_wait(&threadpool->work_available, &threadpool->global_taskqueue.lock);
-                }
-            }
-            platform_mutex_unlock(&threadpool->global_taskqueue.queues[active_index].lock);
-            platform_mutex_unlock(&threadpool->global_taskqueue.queues[!active_index].lock);
-        }
-        else{
-            // there is work in active queue.
-            platform_mutex_lock(&worker->local_taskqueue_info.lock);
-            size_t count = calculate_count(worker, active_queue);
-            move_queue_dual_to_single(&threadpool->global_taskqueue, &worker->local_taskqueue_info, count, true);
-            found_task = dequeue(&worker->local_taskqueue_info, &task);
-            platform_mutex_unlock(&worker->local_taskqueue_info.lock);
-            platform_mutex_unlock(&threadpool->global_taskqueue.queues[active_index].lock);
         }
         if(found_task == true){
+            atomic_fetch_sub(&worker->threadpool->global_taskqueue.queued_task_count, 1);
             task.task(task.args);
+        }
+        else{
+            platform_mutex_lock(&threadpool->work_wait_lock);
+            while(atomic_load(&threadpool->global_taskqueue.queued_task_count) == 0 && !atomic_load(&threadpool->shutdown)){
+                platform_condition_wait(&threadpool->work_available, &threadpool->work_wait_lock);
+            }
+            platform_mutex_unlock(&threadpool->work_wait_lock);
         }
     }
 }
 
-
-static void scheduler(Worker_t *worker){
+#if 0
+// old single queue scheduler, will be removed in the future.
+static void old_scheduler(Worker_t *worker){
     Threadpool_t *threadpool = worker->threadpool;
     while(atomic_load(&threadpool->shutdown) == false){ // as long as we are not shutting down
         // check out local queue.
@@ -330,6 +262,7 @@ static void scheduler(Worker_t *worker){
         }
     }
 }
+#endif
 
 static void worker_entry(void *arg){
     Worker_t *worker = (Worker_t *)arg;
@@ -360,6 +293,14 @@ Threadpool_t *init_threadpool(size_t thread_count){
 
     if(init_dual_queue(&threadpool->global_taskqueue, sizeof(Task_t), TASKQUEUE_SIZE) != 0){
         printf("Failed to initialize global dual task queue.\n");
+        free_threadpool(threadpool);
+        return NULL;
+    }
+
+    // atomic_init(&threadpool->global_taskqueue.queued_task_count, 0);
+    // platform_mutex_init(&threadpool->global_taskqueue.switch_lock);
+    if(platform_mutex_init(&threadpool->work_wait_lock) != 0){
+        printf("Failed to initialize mutex for work wait lock.\n");
         free_threadpool(threadpool);
         return NULL;
     }
@@ -429,4 +370,6 @@ can two small tasks be ran back to back instead of going into the scheduler?
 limit scheduler calls? we dont need to go into the scheduler every single time, we know that we already have a/multiple tasks.
 make a function that will make it easier to add tasks to the threadpool. thinking mostly of functions and arguments
 
+make a general lock implementation that will check if the lock is already locked by yourself. this will make so that some
+supporting functions can call that to know if its already locked, but we dont want to lock again if we already have it
 */

@@ -1,24 +1,28 @@
 #include "headerfiles/threadpool.h"
 
-// adds a single task to threadpool
 bool add_task(Threadpool_t *threadpool, void (*task)(void *), void *args){
     if(threadpool == NULL || task == NULL){
         return false;
     }
 
     Task_t new_task = {.task = task, .args = args};
-    platform_mutex_lock(&threadpool->global_taskqueue.lock);
+    Queue_t *buffer_queue = mutex_lock_dual_queue(&threadpool->global_taskqueue, false); // lock buffer queue
 
+    platform_mutex_lock(&threadpool->work_wait_lock);
     if(atomic_load(&threadpool->shutdown)){
-        platform_mutex_unlock(&threadpool->global_taskqueue.lock);
+        platform_mutex_unlock(&threadpool->work_wait_lock);
+        platform_mutex_unlock(&buffer_queue->lock);
         return false;
     }
 
-    bool added = enqueue(&threadpool->global_taskqueue, &new_task);
+    bool added = enqueue(buffer_queue, &new_task);
+    
     if(added){
+        atomic_fetch_add(&threadpool->global_taskqueue.queued_task_count, 1);
         platform_condition_signal(&threadpool->work_available);
     }
-    platform_mutex_unlock(&threadpool->global_taskqueue.lock);
+    platform_mutex_unlock(&threadpool->work_wait_lock);
+    platform_mutex_unlock(&buffer_queue->lock);
     return added;
 }
 
@@ -26,34 +30,39 @@ bool add_task(Threadpool_t *threadpool, void (*task)(void *), void *args){
 // will prbably be good to use with conditions in condition.c
 bool add_task_bulk(Threadpool_t *threadpool, Queue_t *tasks){
     if(threadpool == NULL || tasks == NULL ||
-       tasks == &threadpool->global_taskqueue){
+       tasks == &threadpool->global_taskqueue.queues[0] ||
+       tasks == &threadpool->global_taskqueue.queues[1]){
         return false;
     }
 
-    platform_mutex_lock(&threadpool->global_taskqueue.lock);
-
+    Queue_t *buffer_queue = mutex_lock_dual_queue(&threadpool->global_taskqueue, false); // lock buffer queue
+    platform_mutex_lock(&threadpool->work_wait_lock);
     if(atomic_load(&threadpool->shutdown)){
-        platform_mutex_unlock(&threadpool->global_taskqueue.lock);
+        platform_mutex_unlock(&threadpool->work_wait_lock);
+        platform_mutex_unlock(&buffer_queue->lock);
         return false;
     }
 
     platform_mutex_lock(&tasks->lock);
     size_t task_count = tasks->active_count;
-    while(threadpool->global_taskqueue.capacity -
-          threadpool->global_taskqueue.active_count < task_count){
-        if(!enlarge_queue(&threadpool->global_taskqueue)){
+    while(buffer_queue->capacity - buffer_queue->active_count < task_count){
+        if(!enlarge_queue(buffer_queue)){
             platform_mutex_unlock(&tasks->lock);
-            platform_mutex_unlock(&threadpool->global_taskqueue.lock);
+            platform_mutex_unlock(&threadpool->work_wait_lock);
+            platform_mutex_unlock(&buffer_queue->lock);
             return false;
         }
     }
 
-    move_queue(tasks, &threadpool->global_taskqueue, task_count);
+    size_t moved = move_queue(tasks, buffer_queue, task_count);
     platform_mutex_unlock(&tasks->lock);
-
-    if(task_count > 0){
+    
+    if(moved > 0){
+        // atomic add to queued_task_count       
+        atomic_fetch_add(&threadpool->global_taskqueue.queued_task_count, moved);
         platform_condition_broadcast(&threadpool->work_available);
     }
-    platform_mutex_unlock(&threadpool->global_taskqueue.lock);
-    return true;
+    platform_mutex_unlock(&threadpool->work_wait_lock);
+    platform_mutex_unlock(&buffer_queue->lock);
+    return moved > 0;
 }

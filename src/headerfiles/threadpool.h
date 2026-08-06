@@ -21,7 +21,7 @@
 typedef struct Threadpool Threadpool_t;
 
 typedef struct{
-    int id;
+    size_t id;
     Threadpool_t *threadpool;
     Platform_thread_t thread;
     Queue_t local_taskqueue_info;
@@ -29,6 +29,7 @@ typedef struct{
 
 struct Threadpool{
     atomic_bool shutdown; // atomic bool that indicates if the threadpool is shutting down. If it is, then all threads will finish their current task and then exit.
+    Platform_mutex_t work_wait_lock; // mutex for the condition variable
     Platform_condition_t work_available; // condition variable for signaling when work is available
     // Queue_t global_taskqueue; // queue of tasks that are ready to be executed.
     Dual_queue_t global_taskqueue; // queue of tasks that are ready to be executed.
@@ -37,9 +38,10 @@ struct Threadpool{
     size_t worker_capacity;
 };
 
-bool add_task(Threadpool_t *threadpool, void (*task)(void *), void *args);
-bool add_task_bulk(Threadpool_t *threadpool, Queue_t *tasks);
 void shutdown_threadpool(Threadpool_t *threadpool);
 Threadpool_t *init_threadpool(size_t thread_count);
+
+bool add_task(Threadpool_t *threadpool, void (*task)(void *), void *args);
+bool add_task_bulk(Threadpool_t *threadpool, Queue_t *tasks);
 
 #endif
