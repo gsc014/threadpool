@@ -45,15 +45,6 @@ bool add_task_bulk(Threadpool_t *threadpool, Queue_t *tasks){
 
     platform_mutex_lock(&tasks->lock);
     size_t task_count = tasks->active_count;
-    while(buffer_queue->capacity - buffer_queue->active_count < task_count){
-        if(!enlarge_queue(buffer_queue)){
-            platform_mutex_unlock(&tasks->lock);
-            platform_mutex_unlock(&threadpool->work_wait_lock);
-            platform_mutex_unlock(&buffer_queue->lock);
-            return false;
-        }
-    }
-
     size_t moved = move_queue(tasks, buffer_queue, task_count);
     platform_mutex_unlock(&tasks->lock);
     

@@ -38,10 +38,12 @@ int main(void){
         return 1;
     }
 
+    platform_mutex_lock(&task_queue.lock);
     for(size_t i = 0; i < task_count; i++){
         Task_t task = {.task = work, .args = (void *)(uintptr_t)i};
         enqueue(&task_queue, &task);
     }
+    platform_mutex_unlock(&task_queue.lock);
 
     Task_t completion_task = {
         .task = done,

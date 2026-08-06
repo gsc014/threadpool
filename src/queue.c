@@ -51,7 +51,7 @@ void free_queue(Queue_t *queue){
 }
 
 // will enlarge the queue by approximately 20 percent.
-bool enlarge_queue(Queue_t *queue){
+bool enlarge_queue(Queue_t *queue, size_t new_capacity){
     
     if(queue == NULL || queue->elements == NULL || queue->capacity == 0){
         printf("Invalid parameter for enlarge_queue.\n");
@@ -59,9 +59,11 @@ bool enlarge_queue(Queue_t *queue){
     }
     assert_mutex_owned(&queue->lock);
 
-    size_t new_capacity = queue->capacity + queue->capacity / 5;
-    if(new_capacity == queue->capacity){
-        new_capacity++;
+    if(new_capacity <= queue->capacity){
+        new_capacity = queue->capacity + queue->capacity / 5;
+        if(new_capacity == queue->capacity){
+            new_capacity++;
+        }
     }
 
     void *new_elements = malloc(new_capacity * queue->element_size);
@@ -94,7 +96,8 @@ bool enqueue(Queue_t *queue, const void *element){
     assert_mutex_owned(&queue->lock);
 
     if(queue->active_count == queue->capacity){
-        if(enlarge_queue(queue) == false){
+        size_t new_capacity = queue->capacity + queue->capacity / 5;
+        if(enlarge_queue(queue, new_capacity) == false){
             return false;
         }
     }
@@ -150,13 +153,19 @@ size_t move_queue(Queue_t *source, Queue_t *destination, size_t count){
         count = source->active_count;
     }
 
-    size_t free_slots = destination->capacity - destination->active_count;
-    if(count > free_slots){
-        count = free_slots;
-    }
-
     if(count == 0){
         return 0;
+    }
+
+    if(count > SIZE_MAX - destination->active_count){
+        return 0;
+    }
+
+    size_t required_capacity = destination->active_count + count;
+    if(required_capacity > destination->capacity){
+        if(!enlarge_queue(destination, required_capacity)){
+            return 0;
+        }
     }
 
     size_t source_index = source->tail;
