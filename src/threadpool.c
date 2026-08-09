@@ -369,4 +369,17 @@ can this be done at startup? we can calculate the approximate time/value for eve
 can two small tasks be ran back to back instead of going into the scheduler?
 limit scheduler calls? we dont need to go into the scheduler every single time, we know that we already have a/multiple tasks.
 make a function that will make it easier to add tasks to the threadpool. thinking mostly of functions and arguments
+
+add a add_task function that will put into a queue, only when a function flush_queue is called, all tasks will be added.
+*/
+
+/*new arcitechture:
+atomic 64 bit int. most amount of bits that is still atomic.
+each bit is an array index.
+
+typedef _Atomic uint64_t atomic_bitmap_t; as bitmap.
+(unsigned)__builtin_ctzll(bits); gives trailing zeros. ex: 101010001110000 = 4. gives pos of first available task.
+
+have multiple uint_64 so we can have many tasks.
+
 */
