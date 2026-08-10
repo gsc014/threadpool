@@ -350,36 +350,17 @@ Threadpool_t *init_threadpool(size_t thread_count){
 }
 
 /* next steps:
-try to reduce locking and use more atomics. 
 try to make the main thread do something if its waiting on something
 benchmark where time is spent. how much time is wasted on locks etc.?
 make a debug mode where you can see statistics, but only in debug mode.
 optimize types in structs to reduce memory.
 make sure that using conditions can be used by main thread functions.
 
-work stealing can be optimized, we just use trylock and that can be pure luck.
-when stealing, take tasks from opposite end of the queue, maybe that can reduce locking? maybe this can use 2 locks?
-resizing of queues, we just resize with a fixed size, what if the size is too small? then we need to resize again.
-
-Workers have a fixed local queue size, dont allcate them, just store as fixed array.
 should a task have a priority?
 should a task have a size? so stealing etc will be more fair? a small task is currently equal to a large task.
 can this be done at startup? we can calculate the approximate time/value for every task?
 
-can two small tasks be ran back to back instead of going into the scheduler?
-limit scheduler calls? we dont need to go into the scheduler every single time, we know that we already have a/multiple tasks.
 make a function that will make it easier to add tasks to the threadpool. thinking mostly of functions and arguments
 
 add a add_task function that will put into a queue, only when a function flush_queue is called, all tasks will be added.
-*/
-
-/*new arcitechture:
-atomic 64 bit int. most amount of bits that is still atomic.
-each bit is an array index.
-
-typedef _Atomic uint64_t atomic_bitmap_t; as bitmap.
-(unsigned)__builtin_ctzll(bits); gives trailing zeros. ex: 101010001110000 = 4. gives pos of first available task.
-
-have multiple uint_64 so we can have many tasks.
-
 */

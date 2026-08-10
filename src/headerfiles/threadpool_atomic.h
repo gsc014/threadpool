@@ -7,7 +7,7 @@
 
 #include "queue.h"
 #include "task.h"
-#include "condition.h"
+#include "condition_atomic.h"
 #include "platform_specific/api.h"
 
 #define BITS_PER_BITMAP 64u
