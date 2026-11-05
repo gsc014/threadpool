@@ -5,7 +5,6 @@
 #include <stdint.h>
 #include <stdatomic.h>
 
-#include "queue.h"
 #include "task.h"
 #include "condition_atomic.h"
 #include "platform_specific/api.h"
@@ -35,6 +34,14 @@ struct AtomicThreadpool{
     AtomicWorker_t *workers;
     size_t worker_count;
 };
+
+static inline int first_available(uint64_t bits){
+    if(bits == 0){
+        return -1;
+    }
+
+    return (int)__builtin_ctzll(bits);
+}
 
 bool add_atomic_task(AtomicThreadpool_t *threadpool, Task_t *task);
 bool add_atomic_task_bulk(

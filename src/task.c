@@ -1,59 +1,129 @@
-#include "headerfiles/threadpool.h"
+#include "threadpool_atomic.h"
 
-bool add_task(Threadpool_t *threadpool, void (*task)(void *), void *args){
+static inline int first_free_slot(uint64_t bits){
+    uint64_t free_bits = ~bits;
+
+    if(free_bits == 0){
+        return -1; // all 64 slots occupied
+    }
+
+    return (int)__builtin_ctzll(free_bits);
+}
+
+bool add_atomic_task(AtomicThreadpool_t *threadpool, Task_t *task){
     if(threadpool == NULL || task == NULL){
         return false;
     }
 
-    Task_t new_task = {.task = task, .args = args};
-    Queue_t *buffer_queue = mutex_lock_dual_queue(&threadpool->global_taskqueue, false); // lock buffer queue
-
-    platform_mutex_lock(&threadpool->work_wait_lock);
     if(atomic_load(&threadpool->shutdown)){
-        platform_mutex_unlock(&threadpool->work_wait_lock);
-        platform_mutex_unlock(&buffer_queue->lock);
         return false;
     }
 
-    bool added = enqueue(buffer_queue, &new_task);
-    
-    if(added){
-        atomic_fetch_add(&threadpool->global_taskqueue.queued_task_count, 1);
-        platform_condition_signal(&threadpool->work_available);
+    for(size_t i = 0; i < TOTAL_BITMAPS; i++){
+        while(true){
+            uint64_t occupied = atomic_load(&threadpool->bit_maps_occupied[i]);
+            int free_slot_index = first_free_slot(occupied);
+            if(free_slot_index == -1){
+                break;
+            }
+
+            uint64_t mask = UINT64_C(1) << free_slot_index;
+            uint64_t old_value = atomic_fetch_or(&threadpool->bit_maps_occupied[i], mask);
+            if(old_value & mask){
+                // someone else got this slot first
+                continue;
+            }
+
+            size_t real_task_index = i * BITS_PER_BITMAP + (size_t)free_slot_index;
+            threadpool->tasks[real_task_index] = *task;
+
+            // mark available.
+            atomic_fetch_or(&threadpool->bit_maps[i], mask);
+            atomic_fetch_or(&threadpool->bit_map_map, UINT64_C(1) << i);
+            return true;
+        }
     }
-    platform_mutex_unlock(&threadpool->work_wait_lock);
-    platform_mutex_unlock(&buffer_queue->lock);
-    return added;
+
+    return false;
 }
 
-// bulk adds tasks to threadpool. holds lock, so is more efficient for multiple tasks. input needs to be a queue of tasks.
-// will prbably be good to use with conditions in condition.c
-bool add_task_bulk(Threadpool_t *threadpool, Queue_t *tasks){
-    if(threadpool == NULL || tasks == NULL ||
-       tasks == &threadpool->global_taskqueue.queues[0] ||
-       tasks == &threadpool->global_taskqueue.queues[1]){
+bool add_atomic_task_bulk(AtomicThreadpool_t *threadpool, Task_t *tasks, size_t task_count){
+    if(threadpool == NULL || tasks == NULL || task_count == 0){
         return false;
     }
 
-    Queue_t *buffer_queue = mutex_lock_dual_queue(&threadpool->global_taskqueue, false); // lock buffer queue
-    platform_mutex_lock(&threadpool->work_wait_lock);
     if(atomic_load(&threadpool->shutdown)){
-        platform_mutex_unlock(&threadpool->work_wait_lock);
-        platform_mutex_unlock(&buffer_queue->lock);
         return false;
     }
 
-    platform_mutex_lock(&tasks->lock);
-    size_t task_count = tasks->active_count;
-    size_t moved = move_queue(tasks, buffer_queue, task_count);
-    platform_mutex_unlock(&tasks->lock);
-    
-    if(moved > 0){
-        // atomic add to queued_task_count       
-        atomic_fetch_add(&threadpool->global_taskqueue.queued_task_count, moved);
-        platform_condition_broadcast(&threadpool->work_available);
+    size_t tasks_added = 0;
+    while(tasks_added < task_count){
+        if(atomic_load(&threadpool->shutdown)){
+            return false;
+        }
+
+        size_t start_index = atomic_fetch_add(&threadpool->bulk_input_index, 1) % TOTAL_BITMAPS;
+        size_t bit_map_index = TOTAL_BITMAPS;
+        size_t partial_bit_map_index = TOTAL_BITMAPS;
+
+        // Prefer a completely empty bitmap. If there is not one, remember
+        // the first partially free bitmap, starting at a different place
+        // for every bulk add.
+        for(size_t i = 0; i < TOTAL_BITMAPS; i++){
+            size_t index = (start_index + i) % TOTAL_BITMAPS;
+            uint64_t occupied = atomic_load(&threadpool->bit_maps_occupied[index]);
+
+            if(occupied == 0){
+                bit_map_index = index;
+                break;
+            }
+
+            if(occupied != UINT64_MAX && partial_bit_map_index == TOTAL_BITMAPS){
+                partial_bit_map_index = index;
+            }
+        }
+
+        if(bit_map_index == TOTAL_BITMAPS){
+            bit_map_index = partial_bit_map_index;
+        }
+        if(bit_map_index == TOTAL_BITMAPS){
+            // Every bitmap was full. Workers need to release some slots.
+            platform_thread_yield();
+            continue;
+        }
+
+        // Claim every currently free slot in this bitmap. The old value
+        // tells us which bits already belonged to someone else.
+        uint64_t old_value = atomic_fetch_or(
+            &threadpool->bit_maps_occupied[bit_map_index],
+            UINT64_MAX
+        );
+        uint64_t claimed = ~old_value;
+        if(claimed == 0){
+            continue;
+        }
+
+        uint64_t added_mask = 0;
+        while(claimed != 0 && tasks_added < task_count){
+            int task_index = first_available(claimed);
+            uint64_t mask = UINT64_C(1) << task_index;
+            size_t real_task_index = bit_map_index * BITS_PER_BITMAP + (size_t)task_index;
+
+            threadpool->tasks[real_task_index] = tasks[tasks_added];
+            tasks_added++;
+            added_mask |= mask;
+            claimed &= ~mask;
+        }
+
+        // Only publish slots that received a task.
+        atomic_fetch_or(&threadpool->bit_maps[bit_map_index], added_mask);
+        atomic_fetch_or(&threadpool->bit_map_map, UINT64_C(1) << bit_map_index);
+
+        // claimed now contains slots we reserved but did not need.
+        if(claimed != 0){
+            atomic_fetch_and(&threadpool->bit_maps_occupied[bit_map_index], ~claimed);
+        }
     }
-    platform_mutex_unlock(&threadpool->work_wait_lock);
-    platform_mutex_unlock(&buffer_queue->lock);
-    return moved > 0;
+
+    return true;
 }

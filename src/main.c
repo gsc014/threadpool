@@ -1,21 +1,22 @@
-#include <threadpool.h>
+#include "threadpool_atomic.h"
 
 #include <stdio.h>
 #include <stdlib.h>
 
-#include<unistd.h>
+#include <unistd.h>
 
-Condition_t condition;
+Condition_atomic_t condition;
 
 void work(void *arg){
     unsigned int index = (unsigned int)(uintptr_t)arg;
     printf("Task %u is running\n", index);
 
-    update_condition(&condition);
+    update_atomic_condition(&condition);
     return;
 }
 
-void done(){
+void done(void *arg){
+    (void)arg;
     printf("All tasks completed!\n");
     return;
 }
@@ -25,38 +26,35 @@ int main(void){
     size_t task_count = hardware_thread_count * 10;
     printf("Hardware thread count: %zu\n", hardware_thread_count);
 
-    Threadpool_t *threadpool = init_threadpool(hardware_thread_count);
+    AtomicThreadpool_t *threadpool = init_atomic_threadpool(hardware_thread_count);
     if(threadpool == NULL){
         fprintf(stderr, "Failed to initialize thread pool.\n");
         return 1;
     }
 
-    Queue_t task_queue = {0};
-    if(init_queue(&task_queue, sizeof(Task_t), task_count) != 0){
-        fprintf(stderr, "Failed to initialize task queue.\n");
-        shutdown_threadpool(threadpool);
+    Task_t *tasks = malloc(task_count * sizeof(Task_t));
+    if(tasks == NULL){
+        fprintf(stderr, "Failed to allocate tasks.\n");
+        shutdown_atomic_threadpool(threadpool);
         return 1;
     }
 
-    platform_mutex_lock(&task_queue.lock);
     for(size_t i = 0; i < task_count; i++){
-        Task_t task = {.task = work, .args = (void *)(uintptr_t)i};
-        enqueue(&task_queue, &task);
+        tasks[i] = (Task_t){.task = work, .args = (void *)(uintptr_t)i};
     }
-    platform_mutex_unlock(&task_queue.lock);
 
     Task_t completion_task = {
         .task = done,
         .args = NULL,
     };
-    init_condition(&condition, task_count, &completion_task);
+    init_atomic_condition(&condition, task_count, &completion_task);
 
-    add_task_bulk(threadpool, &task_queue);
+    add_atomic_task_bulk(threadpool, tasks, task_count);
 
     sleep(1);
 
-    shutdown_threadpool(threadpool);
-    destroy_condition(&condition);
-    free_queue(&task_queue);
+    shutdown_atomic_threadpool(threadpool);
+    destroy_atomic_condition(&condition);
+    free(tasks);
     return 0;
 }
